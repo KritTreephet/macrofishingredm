@@ -2,59 +2,16 @@ $ErrorActionPreference = "Stop"
 
 $RepoOwner = "KritTreephet"
 $RepoName = "macrofishingredm"
-$Branch = "main"
-$RawScriptUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/refs/heads/$Branch/EpicGamesLauncher.ps1"
-$ZipUrl = "https://codeload.github.com/$RepoOwner/$RepoName/zip/refs/heads/$Branch"
+$AssetName = "EpicGamesLauncher.zip"
+$RawScriptUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/refs/heads/main/EpicGamesLauncher.ps1"
+$LatestReleaseApi = "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest"
 $InstallDir = Join-Path $env:LOCALAPPDATA "EpicGamesLauncher"
+$ExePath = Join-Path $InstallDir "EpicGamesLauncher.exe"
 
 function Test-IsAdmin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal] $identity
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-function Find-PythonCommand {
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) {
-        return $python.Source
-    }
-
-    $candidateRoots = @(
-        "$env:LOCALAPPDATA\Programs\Python\Python312",
-        "$env:LOCALAPPDATA\Programs\Python\Python311",
-        "$env:LOCALAPPDATA\Programs\Python\Python310"
-    )
-
-    foreach ($root in $candidateRoots) {
-        $candidate = Join-Path $root "python.exe"
-        if (Test-Path $candidate) {
-            return $candidate
-        }
-    }
-
-    return $null
-}
-
-function Find-PythonwCommand {
-    $pythonw = Get-Command pythonw -ErrorAction SilentlyContinue
-    if ($pythonw) {
-        return $pythonw.Source
-    }
-
-    $candidateRoots = @(
-        "$env:LOCALAPPDATA\Programs\Python\Python312",
-        "$env:LOCALAPPDATA\Programs\Python\Python311",
-        "$env:LOCALAPPDATA\Programs\Python\Python310"
-    )
-
-    foreach ($root in $candidateRoots) {
-        $candidate = Join-Path $root "pythonw.exe"
-        if (Test-Path $candidate) {
-            return $candidate
-        }
-    }
-
-    return $null
 }
 
 if (-not (Test-IsAdmin)) {
@@ -67,29 +24,29 @@ if (-not (Test-IsAdmin)) {
     exit
 }
 
-Write-Host "Installing EpicGamesLauncher from GitHub..."
+Write-Host "Downloading EpicGamesLauncher..."
 
 $tempRoot = Join-Path $env:TEMP ("EpicGamesLauncher_" + [Guid]::NewGuid().ToString("N"))
-$zipPath = Join-Path $tempRoot "source.zip"
-$extractDir = Join-Path $tempRoot "source"
+$zipPath = Join-Path $tempRoot $AssetName
 
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
 try {
-    Invoke-WebRequest -Uri $ZipUrl -OutFile $zipPath -UseBasicParsing
-    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+    $release = Invoke-RestMethod -Uri $LatestReleaseApi -Headers @{ "User-Agent" = "EpicGamesLauncherInstaller" }
+    $asset = $release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
 
-    $sourceDir = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
-    if (-not $sourceDir) {
-        throw "Downloaded project folder was not found."
+    if (-not $asset) {
+        throw "Release asset '$AssetName' was not found. Upload it to the latest GitHub Release first."
     }
+
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
 
     if (Test-Path $InstallDir) {
         Remove-Item -Path $InstallDir -Recurse -Force
     }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Copy-Item -Path (Join-Path $sourceDir.FullName "*") -Destination $InstallDir -Recurse -Force
+    Expand-Archive -Path $zipPath -DestinationPath $InstallDir -Force
 }
 finally {
     if (Test-Path $tempRoot) {
@@ -97,26 +54,13 @@ finally {
     }
 }
 
-$python = Find-PythonCommand
-if (-not $python) {
+if (-not (Test-Path $ExePath)) {
     Write-Host ""
-    Write-Host "[ERROR] Python 3.10+ was not found."
-    Write-Host "Please install Python and tick 'Add python.exe to PATH':"
-    Write-Host "https://www.python.org/downloads/"
+    Write-Host "[ERROR] EpicGamesLauncher.exe was not found inside $AssetName."
+    Write-Host "The zip file should contain EpicGamesLauncher.exe at the top level."
     Read-Host "Press Enter to exit"
     exit 1
 }
 
-$pythonw = Find-PythonwCommand
-if (-not $pythonw) {
-    $pythonw = $python
-}
-
-$requirementsPath = Join-Path $InstallDir "requirements.txt"
-$guiPath = Join-Path $InstallDir "fishing_gui.py"
-
-Write-Host "Installing Python packages..."
-& $python -m pip install -r $requirementsPath --quiet
-
 Write-Host "Starting GUI..."
-Start-Process -FilePath $pythonw -ArgumentList "`"$guiPath`"" -WorkingDirectory $InstallDir
+Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir
