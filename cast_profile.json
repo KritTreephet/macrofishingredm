@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "created_at": "2026-06-20T18:17:20",
+  "description": "Recorded cast timing for fishing_macro.py",
+  "events": [
+    {
+      "type": "mouse",
+      "button": "right",
+      "action": "down",
+      "at": 1.3794
+    },
+    {
+      "type": "mouse",
+      "button": "left",
+      "action": "down",
+      "at": 2.0845
+    },
+    {
+      "type": "mouse",
+      "button": "left",
+      "action": "up",
+      "at": 2.18
+    },
+    {
+      "type": "mouse",
+      "button": "right",
+      "action": "up",
+      "at": 3.3747
+    }
+  ]
+}
