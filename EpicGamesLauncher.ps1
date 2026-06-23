@@ -1,139 +1,151 @@
 # ============================================================
-#  RedM Fishing Macro โ€” One-Click PowerShell Bootstrapper
+#  RedM Fishing Macro - Build Script
+#  Run this on a machine with Python 3.10+ installed.
 #
 #  Usage:
-#    iex (irm 'https://raw.githubusercontent.com/KritTreephet/macrofishingredm/refs/heads/main/EpicGamesLauncher.ps1')
+#    powershell -ExecutionPolicy Bypass -File build_release.ps1
 #
-#  Or after cloning:
-#    powershell -ExecutionPolicy Bypass -File EpicGamesLauncher.ps1
+#  Output:
+#    release/EpicGamesLauncher.exe  <- upload this to GitHub Releases
+#    release/EpicGamesLauncher.zip  <- optional packaged backup
 # ============================================================
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 [console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$RepoOwner = "KritTreephet"
-$RepoName = "macrofishingredm"
-$AssetName = "EpicGamesLauncher.exe"
-$RawScriptUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/refs/heads/main/EpicGamesLauncher.ps1"
-$LatestReleaseApi = "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest"
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$distDir = Join-Path $scriptDir "dist"
+$releaseDir = Join-Path $scriptDir "release"
+$packageDir = Join-Path $releaseDir "EpicGamesLauncher"
+$releaseExePath = Join-Path $releaseDir "EpicGamesLauncher.exe"
+$zipPath = Join-Path $releaseDir "EpicGamesLauncher.zip"
 
-# Determine script directory (works for both local file and iex)
-if ($MyInvocation.MyCommand.Path) {
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $scriptDir
+
+# ---- Find Python ----
+$python = $null
+foreach ($candidate in @("python", "py", "python3")) {
+    $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $python = $cmd.Source
+        break
+    }
+}
+
+if (-not $python) {
+    Write-Host "[ERROR] Python not found. Install Python 3.10+ and add it to PATH." -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
+$pyVer = & $python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+Write-Host "[OK] Python $pyVer at $python" -ForegroundColor Green
+
+# ---- Install dependencies ----
+Write-Host "Installing dependencies..." -ForegroundColor Cyan
+& $python -m pip install -r (Join-Path $scriptDir "requirements.txt") --quiet
+& $python -m pip install pyinstaller --quiet
+
+# ---- Clean old build artifacts ----
+Write-Host "Cleaning old build output..." -ForegroundColor Cyan
+foreach ($dir in @("build", $distDir, $releaseDir)) {
+    if (Test-Path $dir) {
+        Remove-Item -Path $dir -Recurse -Force
+    }
+}
+
+# ---- Locate Tcl/Tk for tkinter bundling ----
+$pythonRoot = Split-Path -Parent $python
+$tclRoot = Join-Path $pythonRoot "tcl"
+$tclLibrary = Join-Path $tclRoot "tcl8.6"
+$tkLibrary = Join-Path $tclRoot "tk8.6"
+
+# Handle embeddable Python (different layout)
+if (-not (Test-Path $tclLibrary)) {
+    $tclLibrary = Join-Path $pythonRoot "tcl\tcl8.6"
+    $tkLibrary = Join-Path $pythonRoot "tcl\tk8.6"
+}
+
+$addDataArgs = @()
+if ((Test-Path $tclLibrary) -and (Test-Path $tkLibrary)) {
+    $env:TCL_LIBRARY = $tclLibrary
+    $env:TK_LIBRARY = $tkLibrary
+    $addDataArgs = @(
+        "--add-data", "$tclLibrary;_tcl_data",
+        "--add-data", "$tkLibrary;_tk_data"
+    )
+    Write-Host "[OK] Found Tcl/Tk" -ForegroundColor Green
 }
 else {
-    $scriptDir = Get-Location.Path
+    Write-Host "[WARN] Tcl/Tk not found - tkinter may not work in the build" -ForegroundColor Yellow
 }
 
-function Test-IsAdmin {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal] $identity
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+# ---- Build with PyInstaller ----
+Write-Host "Building EpicGamesLauncher.exe..." -ForegroundColor Cyan
 
-if (-not (Test-IsAdmin)) {
-    Write-Host ""
-    Write-Host "Requesting Administrator permission..." -ForegroundColor Yellow
-    Start-Process powershell.exe -Verb RunAs -ArgumentList @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-Command", "iex (irm '$RawScriptUrl')"
-    )
-    exit
-}
+$pyInstallerArgs = @(
+    "--noconfirm"
+    "--onefile"
+    "--windowed"
+    "--name", "EpicGamesLauncher"
+    "--hidden-import", "tkinter"
+    "--hidden-import", "_tkinter"
+    "--add-data", "templates;templates"
+    "--add-data", "cast_profile.json;."
+)
+$pyInstallerArgs += $addDataArgs
+$pyInstallerArgs += "fishing_gui.py"
 
-Write-Host ""
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  RedM Fishing Macro โ€” Checking Updates" -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host ""
+& $python -m PyInstaller @pyInstallerArgs
 
-try {
-    $releaseInfo = Invoke-RestMethod -Uri $LatestReleaseApi -Method Get
-
-    $version = $releaseInfo.tag_name
-    $publishedAt = [datetime]$releaseInfo.published_at
-    $localTime = $publishedAt.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")
-
-    $downloadUrl = ($releaseInfo.assets | Where-Object { $_.name -eq $AssetName }).browser_download_url
-
-    if (-not $downloadUrl) {
-        Write-Host "[ERROR] Could not find '$AssetName' in the latest release!" -ForegroundColor Red
-        Read-Host "Press Enter to exit"
-        exit
-    }
-
-    Write-Host "==========================================" -ForegroundColor Yellow
-    Write-Host "  New Update Available!" -ForegroundColor Green
-    Write-Host "  Version: $version" -ForegroundColor White
-    Write-Host "  Date: $localTime" -ForegroundColor White
-    Write-Host "==========================================" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Downloading... Please wait." -ForegroundColor White
-
-} catch {
-    Write-Host "[ERROR] Failed to fetch update info from GitHub." -ForegroundColor Red
-    Write-Host "API Error: $($_.Exception.Message)" -ForegroundColor Yellow
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] PyInstaller build failed!" -ForegroundColor Red
     Read-Host "Press Enter to exit"
-    exit
+    exit 1
 }
 
-$baseTemp = [System.IO.Path]::GetTempPath()
-$folderPath = Join-Path -Path $baseTemp -ChildPath "macrofishingredm"
-
-if (-not (Test-Path -LiteralPath $folderPath)) {
-    New-Item -ItemType Directory -Path $folderPath -Force | Out-Null
-}
-
-$tempPath = Join-Path -Path $folderPath -ChildPath "EpicGamesLauncher.exe"
-
-# Kill old process if running
-try {
-    $processName = [System.IO.Path]::GetFileNameWithoutExtension($tempPath)
-    Get-Process -Name $processName -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Milliseconds 500
-} catch {}
-
-# Remove old file
-try {
-    if (Test-Path -LiteralPath $tempPath) {
-        Remove-Item -LiteralPath $tempPath -Force -ErrorAction Stop
-    }
-} catch {
-    Write-Host "[ERROR] Cannot delete old file. Please make sure the bot is closed." -ForegroundColor Red
-    Write-Host "Details: $($_.Exception.Message)" -ForegroundColor Yellow
+$exePath = Join-Path $distDir "EpicGamesLauncher.exe"
+if (-not (Test-Path $exePath)) {
+    Write-Host "[ERROR] EpicGamesLauncher.exe not found after build!" -ForegroundColor Red
     Read-Host "Press Enter to exit"
-    exit
+    exit 1
 }
 
-# Download with WebClient (fastest, no green pipe)
-try {
-    $webClient = New-Object System.Net.WebClient
-    $webClient.DownloadFile($downloadUrl, $tempPath)
-    Write-Host "Download Complete!" -ForegroundColor Green
-} catch {
-    Write-Host "[ERROR] Error downloading the file." -ForegroundColor Red
-    Write-Host "Download Error: $($_.Exception.Message)" -ForegroundColor Yellow
-    Read-Host "Press Enter to exit"
-    exit
+Write-Host "[OK] Build complete: $exePath" -ForegroundColor Green
+
+# ---- Package into release folder ----
+Write-Host "Packaging release..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+
+Copy-Item -Path $exePath -Destination $packageDir -Force
+Copy-Item -Path $exePath -Destination $releaseExePath -Force
+
+if (Test-Path "templates") {
+    Copy-Item -Path "templates" -Destination $packageDir -Recurse -Force
 }
 
-# Clear PowerShell history (privacy)
-try {
-    $historyPath = (Get-PSReadLineOption).HistorySavePath
-    if (Test-Path -LiteralPath $historyPath) { Clear-Content -LiteralPath $historyPath -Force }
-    Clear-History
-} catch {}
+if (Test-Path "cast_profile.json") {
+    Copy-Item -Path "cast_profile.json" -Destination $packageDir -Force
+}
 
-Write-Host ""
-Write-Host "Launching RedM Fishing Macro..." -ForegroundColor Green
-Start-Process -FilePath $tempPath
+# ---- Create zip ----
+Write-Host "Creating zip..." -ForegroundColor Cyan
+Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -Force
 
-Start-Sleep -Seconds 2
+$zipSize = (Get-Item $zipPath).Length / 1MB
+$exeSize = (Get-Item $releaseExePath).Length / 1MB
 Write-Host ""
-Write-Host "[OK] GUI launched successfully!" -ForegroundColor Green
-Write-Host "You can close this window now." -ForegroundColor DarkGray
+Write-Host "==========================================" -ForegroundColor Green
+Write-Host "  Build successful!" -ForegroundColor Green
+Write-Host "  Release EXE: $releaseExePath" -ForegroundColor White
+Write-Host "  EXE Size: $([math]::Round($exeSize, 1)) MB" -ForegroundColor White
+Write-Host "  Backup ZIP: $zipPath" -ForegroundColor White
+Write-Host "  ZIP Size: $([math]::Round($zipSize, 1)) MB" -ForegroundColor White
+Write-Host "==========================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "Upload this file to GitHub Releases as:" -ForegroundColor Yellow
+Write-Host "  EpicGamesLauncher.exe" -ForegroundColor White
 Write-Host ""
