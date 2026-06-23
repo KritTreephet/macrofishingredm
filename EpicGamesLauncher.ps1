@@ -15,7 +15,13 @@ $RepoName = "macrofishingredm"
 $Branch = "main"
 $RawBase = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/refs/heads/$Branch"
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Determine script directory (works for both local file and iex)
+if ($MyInvocation.MyCommand.Path) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+else {
+    $scriptDir = Get-Location.Path
+}
 Set-Location $scriptDir
 
 $pythonEmbedDir = Join-Path $scriptDir "python_embed"
@@ -46,10 +52,11 @@ function Test-IsAdmin {
 
 if (-not (Test-IsAdmin)) {
     Write-Host "Requesting Administrator permission..." -ForegroundColor Yellow
+    $cmdStr = "iex (irm `"$RawBase/EpicGamesLauncher.ps1`")"
     Start-Process powershell.exe -Verb RunAs -ArgumentList @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-Command", "iex (irm '$RawBase/EpicGamesLauncher.ps1')"
+        "-Command", $cmdStr
     )
     exit
 }
@@ -70,13 +77,33 @@ foreach ($file in $filesToDownload) {
     $out = Join-Path $scriptDir $file
     Write-Host "  Downloading $file..."
     try {
-        Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+        $content = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30
+        [System.IO.File]::WriteAllText($out, $content, [System.Text.Encoding]::UTF8)
         Write-Host "  [OK] $file" -ForegroundColor Green
     }
     catch {
         Write-Host "  [ERROR] Failed to download $file" -ForegroundColor Red
         Read-Host "Press Enter to exit"
         exit 1
+    }
+}
+
+# Fix UTF-8 encoding for files with emoji characters
+Write-Host "  Applying UTF-8 encoding fix..."
+$encodingFix = @'
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+'@
+foreach ($pyFile in @("fishing_macro.py", "fishing_gui.py")) {
+    $pyPath = Join-Path $scriptDir $pyFile
+    if (Test-Path $pyPath) {
+        $original = [System.IO.File]::ReadAllText($pyPath, [System.Text.Encoding]::UTF8)
+        if ($original -notlike "*io.TextIOWrapper*") {
+            $newContent = $encodingFix + "`n" + $original
+            [System.IO.File]::WriteAllText($pyPath, $newContent, [System.Text.Encoding]::UTF8)
+            Write-Host "  [OK] $pyFile encoding fix applied" -ForegroundColor Green
+        }
     }
 }
 
